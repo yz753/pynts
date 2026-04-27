@@ -44,19 +44,26 @@ def compute_ramps(
     session,
     session_type,
     cluster_spikes,
+    context,
+    trial_types,
+    track_types,
+    bounds,
     num_bins,
-    bounds=[(0, 200)],
-    context=["rz1"],
-    trial_types=["b", "nb"],
-    outbound=(30, 90),
-    homebound=(110, 170),
+    outbound,
+    homebound,
     smooth_sigma=None,
     epoch=None,
-    is_shuffle=False,
+    is_shuffle=True,
 ):
     if epoch is None:
         epoch = cluster_spikes.time_support
-    trials = session["trials"][session["trials"]["type"].isin(trial_types)]
+        
+    select_trial_type = session["trials"][session["trials"]["type"].isin(trial_types)]
+    if "tracks" in session:
+        select_track_type = session["tracks"][session["tracks"]["type"].isin(track_types)]
+        trials = select_trial_type.intersect(select_track_type)
+    else:
+        trials = select_trial_type
 
     def compute_tuning_curve(epochs):
         return nap.compute_tuning_curves(
