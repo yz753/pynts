@@ -31,10 +31,10 @@ def compute_grid_score(
     num_bins=None,
     bin_size=2.5,
     range=None,
+    ellipse_transform=False,
     smooth_sigma=2,
     epoch=None,
     is_shuffle=False,
-    ellipse_transform=False,
 ):
     """
     Computes the grid score for a given cluster.
@@ -172,6 +172,8 @@ def compute_grid_score(
             ),
             "_smooth_sigma": smooth_sigma,
             "_ellipse_transform": ellipse_transform,
+            "tc": tc,
+            "autocorr": autocorr,
         }
 
 
