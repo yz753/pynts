@@ -3,6 +3,7 @@ import multiprocessing as mp
 import warnings
 from functools import reduce
 from itertools import product
+from typing import Union, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -77,20 +78,20 @@ def with_null_distribution(tuning_score_fn, classification_fn, n_shuffles, cv_sm
     Decorator to compute the null distribution of a tuning score.
     """
 
-    def wrapper(session, session_type, cluster, epoch=None, **kwargs):
+    def wrapper(session, session_type, cluster_spikes, epoch=None, **kwargs):
         if cv_smooth:
             kwargs["smooth_sigma"] = True
         score = tuning_score_fn(
             session,
             session_type,
-            cluster,
+            cluster_spikes,
             epoch=epoch,
             **kwargs,
         )
         if np.isnan(list(score.values())[0]):
             return {**score, "sig": False, "null": pd.DataFrame([])}
         null_distribution = _compute_null_distribution(
-            cluster,
+            cluster_spikes,
             session,
             session_type,
             score,
@@ -212,7 +213,7 @@ def for_all_groups(tuning_score_fn, session_type, groupers):
         }
     """
 
-    def wrapper(session, session_type, cluster):
+    def wrapper(session, session_type, cluster_spikes):
         results = []
 
         for combo in product(*groupers.values()):
@@ -221,7 +222,7 @@ def for_all_groups(tuning_score_fn, session_type, groupers):
                 tuning_score_fn(
                     session,
                     session_type,
-                    cluster,
+                    cluster_spikes,
                     **group_kwargs,
                 )
             ):
@@ -231,7 +232,7 @@ def for_all_groups(tuning_score_fn, session_type, groupers):
     return wrapper
 
 
-def for_epochs(tuning_score_fn, session, epochs: int | dict):
+def for_epochs(tuning_score_fn, session, epochs: Union[int | dict]):
     """
     Decorator to compute over given epochs.
     """
@@ -340,17 +341,17 @@ def with_shifts(
         for shift, projected in shifted_behaviour.items()
     }
 
-    def wrapper(session, session_type, cluster, epoch=nap.IntervalSet(-np.inf, np.inf)):
+    def wrapper(session, session_type, cluster_spikes, epoch=None):
         results = [
             {
                 **tuning_score_fn(
                     {
                         **projected,
                         "moving": session["moving"],
-                        "trials": session["trials"] if "VR" in session_type else None,
+                        "trials": session["trials"] if "vr" in session_type.lower() else None,
                     },
                     session_type,
-                    cluster,
+                    cluster_spikes,
                     smooth_sigma=cv_smooth,
                     epoch=epoch.intersect(list(projected.values())[0].time_support),
                 ),
@@ -363,11 +364,11 @@ def with_shifts(
             # Compute null distribution for no travel
             zero_lag = results[list(shifted_behaviour.keys()).index(0.0)]
             zero_lag["null"] = _compute_null_distribution(
-                cluster,
+                cluster_spikes,
                 {
                     **shifted_behaviour[0],
                     "moving": session["moving"],
-                    "trials": session["trials"] if "VR" in session_type else None,
+                    "trials": session["trials"] if "vr" in session_type.lower() else None,
                 },
                 session_type,
                 zero_lag,
@@ -462,7 +463,7 @@ def compute_travel_projected(session_type, session, var_label, travel):
     ).values
 
     # Get positions
-    if "VR" in session_type:
+    if "vr" in session_type.lower():
         P = session["travel"]  # shape (T, D)
     else:
         P = np.stack([session["P_x"], session["P_y"]], axis=1)  # (T, 2)
