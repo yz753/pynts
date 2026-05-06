@@ -1,11 +1,13 @@
+from typing import List, Optional
+
 import numpy as np
 import pynapple as nap
 import statsmodels.api as sm
+from numpy.typing import ArrayLike
 from scipy.stats import norm
 from statsmodels.stats.multitest import fdrcorrection
 
-from pynts.wrappers import find_optimal_smoothing
-from pynts.util import gaussian_filter_nan
+from pynts.smoothing import apply_smoothing
 
 
 def classify_ramps(score, null_distribution, alpha=0.01):
@@ -51,7 +53,7 @@ def compute_ramps(
     num_bins,
     outbound,
     homebound,
-    smooth_sigma=None,
+    smooth_sigma="cv",
     epoch=None,
     is_shuffle=True,
 ):
@@ -65,28 +67,29 @@ def compute_ramps(
     else:
         trials = select_trial_type
 
+    range = (
+        [(np.nanmin(session["P"]), np.nanmax(session["P"]))] if range is None else range
+    )
+    bins = num_bins
+
     def compute_tuning_curve(epochs):
         return nap.compute_tuning_curves(
             nap.TsGroup([cluster_spikes]),
             session["P"],
-            bins=num_bins,
-            range=bounds,
-            epochs=session["moving"].intersect(trials).intersect(epochs),
+            bins=bins,
+            range=range,
+            epochs=epochs.intersect(session["moving"]).intersect(trials),
         )[0]
 
-    with np.errstate(invalid="ignore", divide="ignore"):
-        if smooth_sigma is None:
-            smooth_sigma = find_optimal_smoothing(
-                compute_tuning_curve,
-                cluster_spikes.time_support,
-                np.arange(
-                    int(num_bins // 4),
-                ),
-                mode="wrap",
-            )
-        tc = compute_tuning_curve(epoch)
-        if smooth_sigma:
-            tc = gaussian_filter_nan(tc, smooth_sigma, mode="wrap")
+    tc, smooth_sigma = apply_smoothing(
+        compute_tuning_curve,
+        epoch=epoch,
+        dim=1,
+        smooth_sigma=smooth_sigma,
+        sigma_range=np.linspace(1, 3, 10),
+        mode="wrap",
+        keep=True,
+    )
     positions = tc.coords["0"].values
 
     # Compute ramp fits

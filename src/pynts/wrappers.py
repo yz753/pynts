@@ -1,4 +1,3 @@
-from sympy.parsing.sympy_parser import null
 import multiprocessing as mp
 import warnings
 from functools import reduce
@@ -9,78 +8,20 @@ import numpy as np
 import pandas as pd
 import pynapple as nap
 from pathos.multiprocessing import ProcessingPool as Pool
+from sympy.parsing.sympy_parser import null
 from tqdm import tqdm
 
-from pynts.util import (
-    gaussian_filter_nan,
-    shift_circularly,
-    wrap_list,
-)
+from pynts.util import shift_circularly, wrap_list
 
 
-def find_optimal_smoothing(
-    tuning_curve_fn,
-    time_support,
-    smoothing_range,
-    mode: str,
-    n_splits: int = 5,
-) -> float:
-    """
-    Find the optimal smoothing parameter via cross-validation.
-
-    Splits the time support into *n_splits* folds, computes tuning curves on
-    each fold and its complement, then selects the sigma minimising the mean
-    squared error between held-out and smoothed complement curves.
-
-    Falls back to the smallest sigma when all scores are NaN (e.g. too few
-    spikes for any fold to contain data).
-    """
-    splits = time_support.split(time_support.tot_length() / n_splits - 0.01)
-
-    split_curves = [tuning_curve_fn(split) for split in splits]
-    rest_curves = [
-        tuning_curve_fn(
-            reduce(lambda a, b: a.union(b), [s for j, s in enumerate(splits) if j != i])
-        )
-        for i in range(len(splits))
-    ]
-
-    def mse_for_sigma(sigma: float) -> float:
-        per_fold = [
-            (
-                split_curve.values
-                - gaussian_filter_nan(
-                    rest_curve,
-                    mode=mode,
-                    sigma=[0] + [sigma] * (len(split_curve.shape) - 1),
-                )
-            )
-            ** 2
-            for split_curve, rest_curve in zip(split_curves, rest_curves)
-        ]
-        return np.nanmean(per_fold)
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", category=RuntimeWarning, message="Mean of empty slice"
-        )
-        scores = [mse_for_sigma(sigma) for sigma in smoothing_range]
-
-    if np.all(np.isnan(scores)):
-        # No fold had enough data to score any sigma; return minimum smoothing
-        return smoothing_range[0]
-
-    return smoothing_range[np.nanargmin(scores)]
-
-
-def with_null_distribution(tuning_score_fn, classification_fn, n_shuffles, cv_smooth):
+def with_null_distribution(
+    tuning_score_fn, classification_fn, n_shuffles, *args, **kwargs
+):
     """
     Decorator to compute the null distribution of a tuning score.
     """
 
-    def wrapper(session, session_type, cluster_spikes, epoch=None, **kwargs):
-        if cv_smooth:
-            kwargs["smooth_sigma"] = True
+    def wrapper(session, session_type, cluster_spikes, epoch=None, *args, **kwargs):
         score = tuning_score_fn(
             session,
             session_type,
@@ -90,15 +31,18 @@ def with_null_distribution(tuning_score_fn, classification_fn, n_shuffles, cv_sm
         )
         if np.isnan(list(score.values())[0]):
             return {**score, "sig": False, "null": pd.DataFrame([])}
+        if "_smooth_sigma" in score:
+            kwargs["smooth_sigma"] = score["smooth_sigma"]
         null_distribution = _compute_null_distribution(
             cluster_spikes,
             session,
             session_type,
             score,
-            cv_smooth,
             tuning_score_fn,
             n_shuffles,
             epoch,
+            *args,
+            **kwargs,
         )
         return {
             **score,
@@ -110,15 +54,24 @@ def with_null_distribution(tuning_score_fn, classification_fn, n_shuffles, cv_sm
 
 
 def for_cluster(args):
-    cluster_id, session, session_type, clusters, tuning_score_fn, cluster_attributes = (
-        args
-    )
+    (
+        cluster_id,
+        session,
+        session_type,
+        clusters,
+        tuning_score_fn,
+        cluster_attributes,
+        args,
+        kwargs,
+    ) = args
 
     if isinstance(clusters[cluster_id], nap.Tsd):
         cluster = clusters[cluster_id]
     else:
         cluster = clusters[[cluster_id]]
-    tuning_results = wrap_list(tuning_score_fn(session, session_type, cluster))
+    tuning_results = wrap_list(
+        tuning_score_fn(session, session_type, cluster, *args, **kwargs)
+    )
     results = []
     for tuning_result in tuning_results:
         results.append(
@@ -139,7 +92,9 @@ def for_cluster(args):
     return results
 
 
-def for_all_clusters(tuning_score_fn, n_workers, cluster_attributes=[]):
+def for_all_clusters(
+    tuning_score_fn, n_workers, cluster_attributes=[], *args, **kwargs
+):
     def wrapper(session, session_type, clusters):
         cluster_ids = list(clusters.index)
 
@@ -156,6 +111,8 @@ def for_all_clusters(tuning_score_fn, n_workers, cluster_attributes=[]):
                             clusters,
                             tuning_score_fn,
                             cluster_attributes,
+                            args,
+                            kwargs,
                         )
                     )
                 )
@@ -170,6 +127,8 @@ def for_all_clusters(tuning_score_fn, n_workers, cluster_attributes=[]):
                     clusters,
                     tuning_score_fn,
                     cluster_attributes,
+                    args,
+                    kwargs,
                 )
                 for cluster_id in cluster_ids
             ]
@@ -191,7 +150,7 @@ def for_all_clusters(tuning_score_fn, n_workers, cluster_attributes=[]):
     return wrapper
 
 
-def for_all_groups(tuning_score_fn, session_type, groupers):
+def for_all_groups(tuning_score_fn, session_type, groupers, *args, **kwargs):
     """
     Decorator factory that computes the tuning score for all group combinations.
 
@@ -220,10 +179,7 @@ def for_all_groups(tuning_score_fn, session_type, groupers):
             group_kwargs = dict(zip(groupers.keys(), combo))
             for result in wrap_list(
                 tuning_score_fn(
-                    session,
-                    session_type,
-                    cluster_spikes,
-                    **group_kwargs,
+                    session, session_type, cluster_spikes, *args, **group_kwargs, **kwargs
                 )
             ):
                 results.append({**group_kwargs, **result})
@@ -252,7 +208,7 @@ def for_epochs(tuning_score_fn, session, epochs: Union[int | dict]):
             ),
         }
 
-    def wrapper(session, session_type, clusters):
+    def wrapper(session, session_type, clusters, *args, **kwargs):
         results = []
         for epoch_name, epoch in epochs.items():
             for result in wrap_list(
@@ -261,6 +217,9 @@ def for_epochs(tuning_score_fn, session, epochs: Union[int | dict]):
                     session_type,
                     clusters,
                     epoch=epoch,
+                    skip_null=epoch_name != "all",
+                    *args,
+                    **kwargs,
                 )
             ):
                 results.append({"epoch": epoch_name, **result})
@@ -274,16 +233,19 @@ def _compute_null_distribution(
     session,
     session_type,
     result,
-    cv_smooth,
     tuning_score_fn,
     n_shuffles,
     epoch=None,
+    *args,
+    **kwargs,
 ):
     """
     Function to compute the null distribution of a tuning score by shuffling the spikes.
     """
-    pass_on = {k[1:]: result[k] for k in result if k.startswith("_")}
-    pass_on["is_shuffle"] = True
+    kwargs["is_shuffle"] = True
+    for k in result:
+        if k.startswith("_"):
+            kwargs[k[1:]] = result[k]
     return pd.DataFrame(
         [
             tuning_score_fn(
@@ -306,7 +268,8 @@ def _compute_null_distribution(
                     )
                 ),
                 epoch=epoch,
-                **pass_on,
+                *args,
+                **kwargs,
             )
             for _ in range(n_shuffles)
         ]
@@ -320,9 +283,10 @@ def with_shifts(
     session_type,
     var,
     n_shuffles,
-    cv_smooth,
     projection,
     projection_range,
+    *args,
+    **kwargs,
 ):
     """
     Decorator to compute the tuning score for all projections of a given variable.
@@ -341,7 +305,13 @@ def with_shifts(
         for shift, projected in shifted_behaviour.items()
     }
 
-    def wrapper(session, session_type, cluster_spikes, epoch=None):
+    def wrapper(
+        session,
+        session_type,
+        cluster_spikes,
+        epoch=nap.IntervalSet(-np.inf, np.inf),
+        skip_null=False,
+    ):
         results = [
             {
                 **tuning_score_fn(
@@ -352,15 +322,16 @@ def with_shifts(
                     },
                     session_type,
                     cluster_spikes,
-                    smooth_sigma=cv_smooth,
                     epoch=epoch.intersect(list(projected.values())[0].time_support),
+                    *args,
+                    **kwargs,
                 ),
                 "shift": shift,
             }
             for shift, projected in shifted_behaviour.items()
         ]
 
-        if not all(np.isnan(list(r.values())[0]) for r in results):
+        if not all(np.isnan(list(r.values())[0]) for r in results) and not skip_null:
             # Compute null distribution for no travel
             zero_lag = results[list(shifted_behaviour.keys()).index(0.0)]
             zero_lag["null"] = _compute_null_distribution(
@@ -372,10 +343,11 @@ def with_shifts(
                 },
                 session_type,
                 zero_lag,
-                None,
                 tuning_score_fn,
                 n_shuffles,
                 epoch,
+                *args,
+                **kwargs,
             )
             # Classify w.r.t. best travel
             results = [
