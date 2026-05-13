@@ -3,7 +3,7 @@ from typing import Optional
 import numpy as np
 import pynapple as nap
 from numpy.typing import ArrayLike
-from pycircstat2.correlation import circ_corrcc
+from pycircstat2.correlation import circ_corrcl
 from scipy import ndimage as ndi
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
@@ -49,7 +49,7 @@ def compute_precession(
     smooth_sigma: float | ArrayLike = 2,
     epoch: Optional[nap.IntervalSet] = None,
     is_shuffle: bool = False,
-    min_spikes_per_field: int = 10,
+    min_spikes_per_field: int = 100,
     direction: str = "movement",
 ):
     """
@@ -235,8 +235,11 @@ def compute_precession(
     # Results
 
     results = {
-        "circ_corr": [],
-        "direction": direction,
+        "corr": [],
+        "pval": [],
+        "direction": str(direction),
+        "spike_dist": [],
+        "spike_phases": [],
     }
 
     # ------------------------------------------------------------------
@@ -302,19 +305,21 @@ def compute_precession(
         # --------------------------------------------------------------
         # Circular-linear correlation
 
-        phase_unwrapped = np.unwrap(sp_phases)
-
         try:
-            circ_corr = circ_corrcc(
-                phase_unwrapped,
+            result = circ_corrcl(
+                sp_phases,
                 proj_cm,
             )
+            corr, pval = result.r, result.p_value
         except ValueError as _:
             continue
 
         # --------------------------------------------------------------
         # Store
 
-        results["circ_corr"].append(circ_corr)
+        results["corr"].append(corr)
+        results["pval"].append(pval)
+        results["spike_dist"].append(proj_cm)
+        results["spike_phases"].append(sp_phases)
 
     return results
