@@ -3,7 +3,8 @@ from typing import Optional
 import numpy as np
 import pynapple as nap
 from numpy.typing import ArrayLike
-from pycircstat2.correlation import circ_corrcl
+from pycircstat2.correlation import circ_corrcc
+from pycircstat2.regression import CLRegression
 from scipy import ndimage as ndi
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
@@ -73,8 +74,6 @@ def compute_precession(
     if epoch is None:
         epoch = cluster.time_support
 
-    moving_ep = epoch.intersect(session["moving"])
-
     # ------------------------------------------------------------------
     # Spatial range
 
@@ -111,7 +110,7 @@ def compute_precession(
         epoch=epoch,
         dim=2,
         smooth_sigma=smooth_sigma,
-        sigma_range=np.linspace(1, 4, 20),
+        sigma_range=np.linspace(1, 10, 20),
         mode="fill",
         keep=False,
     )
@@ -134,29 +133,16 @@ def compute_precession(
     # Spike-aligned variables
 
     spike_train = cluster[cluster.index[0]]
-
-    spike_phases = spike_train.value_from(
-        theta,
-        ep=moving_ep,
-    )
-
-    spike_positions = spike_train.value_from(
-        P,
-        ep=moving_ep,
-    )
+    spike_phases = spike_train.value_from(theta, ep=session["moving"])
+    spike_positions = spike_train.value_from(P, ep=session["moving"])
 
     # ------------------------------------------------------------------
     # Direction vectors
 
     if direction == "movement":
         vel = np.zeros_like(P)
-
         vel[1:] = np.diff(P, axis=0) / np.diff(P.times())[:, None]
-
-        spike_direction = spike_train.value_from(
-            vel,
-            ep=moving_ep,
-        ).values
+        spike_direction = spike_train.value_from(vel, ep=session["moving"]).values
 
         with np.errstate(invalid="ignore", divide="ignore"):
             spike_direction = spike_direction / np.linalg.norm(
@@ -166,11 +152,7 @@ def compute_precession(
             )
 
     elif direction == "hd":
-        spike_hd = spike_train.value_from(
-            session["H"],
-            ep=moving_ep,
-        ).values
-
+        spike_hd = spike_train.value_from(session["H"], ep=session["moving"]).values
         spike_direction = np.column_stack(
             (
                 np.cos(spike_hd),
@@ -200,7 +182,7 @@ def compute_precession(
                 d=future_vec,
                 t=shifted.times(),
             ),
-            ep=moving_ep,
+            ep=session["moving"],
         ).values
 
     else:
@@ -211,8 +193,8 @@ def compute_precession(
 
     peaks = peak_local_max(
         tc.values,
-        min_distance=3,
-        threshold_rel=0.2,
+        min_distance=4,
+        threshold_rel=0.3,
     )
 
     if len(peaks) == 0:
@@ -271,6 +253,8 @@ def compute_precession(
     results = {
         "corr": [],
         "pval": [],
+        "slope": [],
+        "label": [],
         "direction": str(direction),
         "spike_dist": [],
         "spike_phases": [],
@@ -331,16 +315,20 @@ def compute_precession(
             continue
 
         # --------------------------------------------------------------
-        # Circular-linear correlation
+        # Circular-linear regression
 
         try:
-            result = circ_corrcl(
-                sp_phases,
-                proj_cm,
+            cl = CLRegression(
+                formula="θ ~ x", theta=sp_phases, X=proj_cm, model_type="mean"
             )
+            slope = cl.result["beta"][0]
+            theta_x = (2 * np.pi * np.abs(slope) * proj_cm) % (2 * np.pi)
+            cl.plot()
 
-            corr = result.r
+            result = circ_corrcc(sp_phases, theta_x, method="js", test=True)
             pval = result.p_value
+            signed_rho = np.sign(slope) * abs(result.r)
+            label = "precession" if slope < 0 else "procession"
 
         except ValueError:
             continue
@@ -348,8 +336,10 @@ def compute_precession(
         # --------------------------------------------------------------
         # Store
 
-        results["corr"].append(corr)
+        results["corr"].append(signed_rho)
         results["pval"].append(pval)
+        results["slope"].append(slope)
+        results["label"].append(label)
         results["spike_dist"].append(proj_cm)
         results["spike_phases"].append(sp_phases)
 
