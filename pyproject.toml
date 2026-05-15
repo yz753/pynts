@@ -9,7 +9,7 @@ dependencies = [
     "numpy>=2.2.6",
     "opencv-python-headless>=4.11.0.86",
     "pathos>=0.3.4",
-    "pycircstat2>=0.1.15",
+    "pycircstat2",
     "pynapple>=0.10.3",
     "scikit-image>=0.25.2",
     "statsmodels>=0.14.5",
@@ -47,3 +47,6 @@ unfixable = []
 
 # Allow unused variables when prefixed with underscore
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.uv.sources]
+pycircstat2 = { git = "https://github.com/circstat/pycircstat2" }
