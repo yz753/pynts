@@ -37,7 +37,7 @@ def with_null_distribution(
                 "null": pd.DataFrame([]),
             }
         if "_smooth_sigma" in score:
-            kwargs["smooth_sigma"] = score["smooth_sigma"]
+            kwargs["smooth_sigma"] = score["_smooth_sigma"]
         null_distribution = _compute_null_distribution(
             cluster_spikes,
             session,
