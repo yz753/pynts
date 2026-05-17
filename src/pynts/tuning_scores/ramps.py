@@ -46,20 +46,27 @@ def compute_ramps(
     session: dict,
     session_type: str,
     cluster: nap.TsGroup,
+    range: ArrayLike,
+    context: str,
+    trial_types: List[str],
+    track_types: List[str],
+    outbound: ArrayLike,
+    homebound: ArrayLike,
     num_bins: Optional[int] = None,
     bin_size: Optional[int] = 1,
-    range: ArrayLike = (0, 200),
-    context: List[str] = ["rz1"],
-    trial_types: List[str] = ["b", "nb"],
-    outbound: ArrayLike = (30, 90),
-    homebound: ArrayLike = (110, 170),
     smooth_sigma="cv",
     epoch=None,
     is_shuffle=False,
 ):
     if epoch is None:
         epoch = cluster.time_support
-    trials = session["trials"][session["trials"]["type"].isin(trial_types)]
+    
+    select_trial_type = session["trials"][session["trials"]["type"].isin(trial_types)]
+    if "tracks" in session:
+        select_track_type = session["tracks"][session["tracks"]["type"].isin(track_types)]
+        trials = select_trial_type.intersect(select_track_type)
+    else:
+        trials = select_trial_type
 
     range = (
         [(np.nanmin(session["P"]), np.nanmax(session["P"]))] if range is None else range
