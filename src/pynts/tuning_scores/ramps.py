@@ -102,4 +102,5 @@ def compute_ramps(
         results[f"{region}_intercept"] = model.params[0]
         results[f"{region}_pval"] = model.pvalues[1]
         results[f"{region}_region"] = region
+        results['tc'] = tc
     return results
