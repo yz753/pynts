@@ -43,23 +43,24 @@ def classify_ramps(score, null_distribution, alpha=0.01):
 
 
 def compute_ramps(
-    session,
-    session_type,
-    cluster_spikes,
-    context,
-    trial_types,
-    track_types,
-    bounds,
-    num_bins,
-    outbound,
-    homebound,
+    session: dict,
+    session_type: str,
+    cluster: nap.TsGroup,
+    range: ArrayLike,
+    context: str,
+    trial_types: List[str],
+    track_types: List[str],
+    outbound: ArrayLike,
+    homebound: ArrayLike,
+    num_bins: Optional[int] = None,
+    bin_size: Optional[int] = 1,
     smooth_sigma="cv",
     epoch=None,
     is_shuffle=True,
 ):
     if epoch is None:
-        epoch = cluster_spikes.time_support
-        
+        epoch = cluster.time_support
+    
     select_trial_type = session["trials"][session["trials"]["type"].isin(trial_types)]
     if "tracks" in session:
         select_track_type = session["tracks"][session["tracks"]["type"].isin(track_types)]
@@ -74,7 +75,7 @@ def compute_ramps(
 
     def compute_tuning_curve(epochs):
         return nap.compute_tuning_curves(
-            nap.TsGroup([cluster_spikes]),
+            cluster,
             session["P"],
             bins=bins,
             range=range,
