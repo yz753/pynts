@@ -36,7 +36,7 @@ def compute_spatial_information(
     if epoch is None:
         epoch = cluster.time_support
 
-    if "VR" in session_type:
+    if "vr" in session_type.lower():
         dim = 1
         mode = "wrap"
         key = "P"
