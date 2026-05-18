@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pynapple as nap
@@ -23,6 +23,7 @@ def compute_precession(
     epoch: Optional[nap.IntervalSet] = None,
     min_spikes: int = 100,
     direction: str | int = "movement",
+    precession_range: Tuple[int, int] = (-50, 50),
 ):
     """
     Global phase precession analysis using continuous
@@ -192,7 +193,12 @@ def compute_precession(
     # ------------------------------------------------------------
     # Clean
 
-    valid = np.isfinite(spike_phase) & np.isfinite(spike_pos)
+    valid = (
+        np.isfinite(spike_phase)
+        & np.isfinite(spike_pos)
+        & (spike_pos >= precession_range[0])
+        & (spike_pos <= precession_range[1])
+    )
 
     spike_phase = spike_phase[valid]
     spike_pos = spike_pos[valid]
