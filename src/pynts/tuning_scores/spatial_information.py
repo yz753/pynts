@@ -39,16 +39,15 @@ def compute_spatial_information(
     if "vr" in session_type.lower():
         dim = 1
         mode = "wrap"
-        key = "P"
         range = (
             [(np.nanmin(session["P"]), np.nanmax(session["P"]))]
             if range is None
             else range
         )
+        P = session["P"]
     else:
         dim = 2
         mode = "fill"
-        key = ("P_x", "P_y")
         range = (
             [
                 (np.nanmin(session["P_x"]), np.nanmax(session["P_x"])),
@@ -57,7 +56,7 @@ def compute_spatial_information(
             if range is None
             else range
         )
-    P = np.stack([session[k] for k in wrap_list(key)], axis=1)
+        P = np.stack([session["P_x"], session["P_y"]], axis=1)
     if num_bins is None:
         bins = [int((dim_range[1] - dim_range[0]) // bin_size) for dim_range in range]
     else:
