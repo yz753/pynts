@@ -69,7 +69,7 @@ def compute_spatial_information(
             bins=bins,
             range=range,
             epochs=epochs.intersect(session["moving"]),
-        )
+        )[0]
 
     tc, smooth_sigma = apply_smoothing(
         compute_tuning_curve,
