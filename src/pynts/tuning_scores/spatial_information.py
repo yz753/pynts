@@ -5,7 +5,6 @@ import pynapple as nap
 from numpy.typing import ArrayLike
 
 from pynts.smoothing import apply_smoothing
-from pynts.util import wrap_list
 
 
 def classify_spatial_information(score, null_distribution, alpha=0.001):
@@ -56,7 +55,7 @@ def compute_spatial_information(
             if range is None
             else range
         )
-        P = np.stack([session["P_x"], session["P_y"]], axis=1)
+        P = np.stack([session[k] for k in ["P_x", "P_y"]], axis=1)
     if num_bins is None:
         bins = [int((dim_range[1] - dim_range[0]) // bin_size) for dim_range in range]
     else:
@@ -82,6 +81,8 @@ def compute_spatial_information(
     )
 
     return {
-        "spatial_information": nap.compute_mutual_information(tc)["bits/spike"].item(),
+        "spatial_information": nap.compute_mutual_information(
+            tc.expand_dims({"unit": [0]})
+        )["bits/spike"].item(),
         "_smooth_sigma": smooth_sigma,
     }
