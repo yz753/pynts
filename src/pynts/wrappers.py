@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pynapple as nap
 from pathos.multiprocessing import ProcessingPool as Pool
-from sympy.parsing.sympy_parser import null
+from statsmodels.stats.multitest import multipletests
 from tqdm import tqdm
 
 from pynts.util import shift_circularly, wrap_list
@@ -290,6 +290,7 @@ def with_shifts(
     n_shuffles,
     projection,
     projection_range,
+    skip_null=False,
     *args,
     **kwargs,
 ):
@@ -315,7 +316,7 @@ def with_shifts(
         session_type,
         cluster,
         epoch=nap.IntervalSet(-np.inf, np.inf),
-        skip_null=False,
+        skip_null=skip_null,
     ):
         results = [
             {
@@ -333,10 +334,10 @@ def with_shifts(
                 ),
                 "shift": shift,
             }
-            for shift, projected in shifted_behaviour.items()
+            for shift, projected in tqdm(shifted_behaviour.items(), unit="shift")
         ]
 
-        if not all(np.isnan(list(r.values())[0]) for r in results) and not skip_null:
+        if not skip_null and not all(np.isnan(list(r.values())[0]) for r in results):
             # Compute null distribution for no travel
             zero_lag = results[list(shifted_behaviour.keys()).index(0.0)]
             zero_lag["null"] = _compute_null_distribution(
@@ -362,6 +363,16 @@ def with_shifts(
                 }
                 for r in results
             ]
+
+        # Correct p values
+        if "p_val" in results[0]:
+            pvals = [r["p_val"] for r in results]
+            _, pvals_fdr, _, _ = multipletests(
+                pvals,
+                method="fdr_bh",
+            )
+            for r, p in zip(results, pvals_fdr):
+                r["p_val_fdr"] = p
 
         return results
 
@@ -402,6 +413,10 @@ def compute_time_projected(session_type, session, var_label, shift):
     if isinstance(var_label, str):
         var_label = [var_label]
 
+    if shift == 0:
+        d = np.stack([session[v].values for v in var_label], axis=1)
+        return nap.TsdFrame(d=d, t=session[var_label[0]].times(), columns=var_label)
+
     var = (
         np.stack([session[label] for label in var_label], axis=1)
         if len(var_label) > 1
@@ -432,18 +447,27 @@ def compute_travel_projected(session_type, session, var_label, travel):
     if isinstance(var_label, str):
         var_label = [var_label]
 
+    if travel == 0:
+        d = np.stack([session[v].values for v in var_label], axis=1)
+        return nap.TsdFrame(
+            d=d, t=session[var_label[0]].times(), columns=var_label
+        ).dropna()
+
     # Extract variables
-    var_values = (
+    var = (
         np.stack([session[label] for label in var_label], axis=1)
         if len(var_label) > 1
         else session[var_label[0]][:, None]
-    ).values
+    ).dropna()
 
     # Get positions
     if "VR" in session_type:
         P = session["travel"]  # shape (T, D)
     else:
         P = np.stack([session["P_x"], session["P_y"]], axis=1)  # (T, 2)
+    P = P.dropna()
+    P = P.interpolate(var)
+    var_values = var.restrict(P.time_support).values
 
     times = P.times() if hasattr(P, "times") else np.arange(len(P))
 

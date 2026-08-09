@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pynapple as nap
 from numpy.typing import ArrayLike
-from pycircstat2.correlation import circ_corrcc
+from pycircstat2.correlation import circ_corrcl
 from pycircstat2.regression import CLRegression
 from scipy import ndimage as ndi
 from scipy.stats import circmean
@@ -12,15 +12,6 @@ from skimage.segmentation import watershed
 
 from pynts.smoothing import apply_smoothing
 from pynts.wrappers import compute_travel_projected
-
-
-def classify_precession(score, null_distribution, alpha=0.05):
-    return {
-        "sig": score["pseudo_r2"]
-        > np.nanpercentile(null_distribution["pseudo_r2"], 100 * (1 - alpha)),
-        "pval": (np.nansum(null_distribution["pseudo_r2"] >= score["pseudo_r2"]) + 1)
-        / (len(null_distribution["pseudo_r2"]) + 1),
-    }
 
 
 def compute_precession(
@@ -46,10 +37,8 @@ def compute_precession(
         3. Projecting onto directional vector
     """
     results = {
-        "pseudo_r2": np.nan,
         "slope": np.nan,
         "direction": direction,
-        "label": np.nan,
         "spike_pos": [],
         "spike_phase": [],
     }
@@ -155,6 +144,54 @@ def compute_precession(
                 keepdims=True,
             )
 
+    elif direction == "stops":
+        stops = (
+            session["S"]
+            .threshold(3.0, method="below")
+            .time_support.drop_short_intervals(0.4)
+        )
+        if len(stops) <10:
+            return results
+        else:
+            results["n_stops"] = len(stops)
+
+        mask = P.in_interval(stops).values
+
+        P_next_stop_mean = np.full_like(P, np.nan, dtype=float)
+        changes = np.diff(mask.astype(int))
+        stop_starts = np.where(changes == 1)[0] + 1
+        stop_ends = np.where(changes == -1)[0] + 1
+
+        # handle edge cases
+        if mask[0]:
+            stop_starts = np.r_[0, stop_starts]
+
+        if mask[-1]:
+            stop_ends = np.r_[stop_ends, len(mask)]
+
+        # previous boundary
+        prev_end = 0
+
+        for start, end in zip(stop_starts, stop_ends):
+            # mean position during this stop block
+            mean_pos = P[start:end].mean(axis=0)
+
+            # fill preceding movement block
+            P_next_stop_mean[prev_end:start] = mean_pos
+
+            # fill stop block itself
+            P_next_stop_mean[start:end] = mean_pos
+
+            prev_end = end
+
+        future_vec = P_next_stop_mean.values - P.values
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            D = future_vec / np.linalg.norm(
+                future_vec,
+                axis=1,
+                keepdims=True,
+            )
     else:
         raise ValueError("direction must be 'movement', 'hd', or int")
 
@@ -228,58 +265,26 @@ def compute_precession(
         return results
 
     # ------------------------------------------------------------
-    # Circular-linear regression on first half, test on second half
-    first_half, second_half = cluster.time_support.split(
-        cluster.time_support.tot_length() // 2
-    )
-
-    spike_phase_first = spike_phase.restrict(first_half)
-    spike_pos_first = spike_pos.restrict(first_half)
-
-    spike_phase_second = spike_phase.restrict(second_half)
-    spike_pos_second = spike_pos.restrict(second_half)
+    # Circular-linear correlation+regression
 
     try:
+        corr = circ_corrcl(
+            x=spike_pos.values,
+            a=spike_phase.values,
+        )
         cl = CLRegression(
             formula="θ ~ x",
-            theta=spike_phase_first,
-            X=spike_pos_first,
+            theta=spike_phase.values,
+            X=spike_pos.values,
             model_type="mean",
         )
         slope = cl.result["beta"][0]
 
-        # ------------------------------------------------------------
-        # Predictions on held-out set
-        theta_pred = cl.predict(spike_pos_second)
-        theta_pred = np.angle(np.exp(1j * theta_pred))
-
-        # ------------------------------------------------------------
-        # Residual angular error
-        residuals = np.angle(np.exp(1j * (spike_phase_second.values - theta_pred)))
-        ss_res = np.sum(residuals**2)
-
-        # ------------------------------------------------------------
-        # Null model
-
-        mean_phase = circmean(
-            spike_phase_second.values,
-            high=0,
-            low=2 * np.pi,
-        )
-        null_residuals = np.angle(np.exp(1j * (spike_phase_second.values - mean_phase)))
-        ss_null = np.sum(null_residuals**2)
-
-        # ------------------------------------------------------------
-        # Cross-validated circular pseudo-R²
-
-        pseudo_r2 = 1 - (ss_res / ss_null)
-        label = "precession" if slope < 0 else "procession"
-
         results.update(
             {
+                "pval": corr.p_value,
+                "corr": corr.r,
                 "slope": slope,
-                "pseudo_r2": pseudo_r2,
-                "label": label,
                 "direction": direction,
                 "spike_pos": spike_pos.values,
                 "spike_phase": spike_phase.values,
