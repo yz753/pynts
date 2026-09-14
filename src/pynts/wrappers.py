@@ -98,10 +98,18 @@ def for_cluster(args):
 
 
 def for_all_clusters(
-    tuning_score_fn, n_workers, cluster_attributes=[], *args, **kwargs
+    tuning_score_fn,
+    n_workers,
+    cluster_attributes=[],
+    filter_region=False,
+    *args,
+    **kwargs,
 ):
     def wrapper(session, session_type, clusters):
-        cluster_ids = list(clusters.index)
+        if filter_region:
+            cluster_ids = clusters[clusters["brain_region"] == filter_region]
+        else:
+            cluster_ids = list(clusters.index)
 
         # Sequential path
         if n_workers == 1:
@@ -324,17 +332,17 @@ def with_shifts(
                     {
                         **projected,
                         "moving": session["moving"],
-                        "trials": session["trials"] if "VR" in session_type else None,
+                        "trials": session["trials"] if "trials" in session else None,
                     },
                     session_type,
                     cluster,
-                    epoch=epoch.intersect(list(projected.values())[0].time_support),
+                    epoch=epoch.intersect(cluster.time_support),
                     *args,
                     **kwargs,
                 ),
                 "shift": shift,
             }
-            for shift, projected in tqdm(shifted_behaviour.items(), unit="shift")
+            for shift, projected in shifted_behaviour.items()
         ]
 
         if not skip_null and not all(np.isnan(list(r.values())[0]) for r in results):
@@ -345,7 +353,7 @@ def with_shifts(
                 {
                     **shifted_behaviour[0],
                     "moving": session["moving"],
-                    "trials": session["trials"] if "VR" in session_type else None,
+                    "trials": session["trials"] if "trials" in session else None,
                 },
                 session_type,
                 zero_lag,
@@ -447,28 +455,31 @@ def compute_travel_projected(session_type, session, var_label, travel):
     if isinstance(var_label, str):
         var_label = [var_label]
 
-    if travel == 0:
-        d = np.stack([session[v].values for v in var_label], axis=1)
-        return nap.TsdFrame(
-            d=d, t=session[var_label[0]].times(), columns=var_label
-        ).dropna()
-
     # Extract variables
-    var = (
-        np.stack([session[label] for label in var_label], axis=1)
-        if len(var_label) > 1
-        else session[var_label[0]][:, None]
-    ).dropna()
+    d = np.stack([session[v].values for v in var_label], axis=1)
+    var = nap.TsdFrame(
+        nap.TsdFrame(
+            d=d,
+            t=session[var_label[0]].times(),
+            columns=var_label,
+        )
+        .as_dataframe()
+        .interpolate()
+        .dropna()
+    )
+    if travel == 0:
+        return var
 
     # Get positions
     if "VR" in session_type:
         P = session["travel"]  # shape (T, D)
     else:
         P = np.stack([session["P_x"], session["P_y"]], axis=1)  # (T, 2)
-    P = P.dropna()
-    P = P.interpolate(var)
-    var_values = var.restrict(P.time_support).values
-
+    P = (
+        nap.TsdFrame(P.as_dataframe().interpolate().dropna())
+        .restrict(var.time_support)
+        .interpolate(var)
+    )
     times = P.times() if hasattr(P, "times") else np.arange(len(P))
 
     # Compute cumulative distances
@@ -483,10 +494,10 @@ def compute_travel_projected(session_type, session, var_label, travel):
     target_distances = np.clip(target_distances, cum_distances[0], cum_distances[-1])
 
     # Interpolate each dimension
-    projected_values = np.empty_like(var_values)
-    for dim in range(var_values.shape[1]):
+    projected_values = np.empty_like(var.values)
+    for dim in range(var.values.shape[1]):
         projected_values[:, dim] = np.interp(
-            target_distances, cum_distances, var_values[:, dim]
+            target_distances, cum_distances, var.values[:, dim]
         )
 
     return nap.TsdFrame(t=times, d=projected_values, columns=var_label)

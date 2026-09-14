@@ -61,11 +61,15 @@ def fit_glm_classify(
         features["T"] = make_feature("T", theta, bounds["T"], y, epoch)
 
     # Define data splits
-    splits = epoch.split((epoch.tot_length() - 0.01) / 20)
-    train_idx = ~np.isnan(splits[::2].intersect(session["moving"]).in_interval(y))
+    splits = (
+        epoch.split((epoch.tot_length() - 0.01) / 20)
+        if "trials" not in session or session["trials"] is None
+        else session["trials"]
+    )
+    train_idx = ~np.isnan(splits[:10].intersect(session["moving"]).in_interval(y))
     test_idx = [
         ~np.isnan(test_epoch.intersect(session["moving"]).in_interval(y))
-        for test_epoch in splits[1::2]
+        for test_epoch in splits[10:]
     ]
 
     # Fit GLMs
@@ -97,13 +101,14 @@ def fit_glm_classify(
                 [
                     ("basis", basis.to_transformer()),
                     ("imputer", SimpleImputer(missing_values=np.nan, strategy="mean")),
-                    ("glm", PoissonRegressor(max_iter=1000)),
+                    ("glm", PoissonRegressor()),
                 ]
             ),
-            {**basis_search_space, "glm__alpha": np.logspace(-5, 0, 10)},
+            {**basis_search_space, "glm__alpha": np.logspace(-4, 1, 10)},
             cv=KFold(n_splits=2, shuffle=True, random_state=42),
             scoring=scorer,
             n_iter=n_iter,
+            n_jobs=1,
         )
         with np.errstate(divide="ignore"):
             cv.fit(X[train_idx], y.values[train_idx])
@@ -130,7 +135,7 @@ def fit_glm_classify(
     # Classify
     # -----------------------------
     single_vars = [s for s in results.keys() if len(s) == 1 and s != "null"]
-    best_spec = max(single_vars, key=lambda s: np.nanmean(results[s]["scores"]))
+    best_spec = max(single_vars, key=lambda s: np.nanmedian(results[s]["scores"]))
 
     for k in range(2, 5):
         candidates = [
@@ -140,7 +145,9 @@ def fit_glm_classify(
         if not candidates:
             break
 
-        best_candidate = max(candidates, key=lambda s: np.nanmean(results[s]["scores"]))
+        best_candidate = max(
+            candidates, key=lambda s: np.nanmedian(results[s]["scores"])
+        )
 
         pval = wilcoxon_nan(
             results[best_candidate]["scores"], results[best_spec]["scores"]

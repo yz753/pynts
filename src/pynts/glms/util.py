@@ -5,7 +5,7 @@ import pynapple as nap
 import seaborn as sns
 from nemos.basis import BSplineEval, CyclicBSplineEval
 from scipy.ndimage import label, maximum_filter
-from scipy.stats import wilcoxon
+from scipy.stats import uniform, wilcoxon
 from sklearn.base import BaseEstimator, TransformerMixin
 
 from pynts.smoothing import gaussian_filter_nan
@@ -23,6 +23,59 @@ def interpolate(var, y, other):
         )
     else:
         return y.interpolate(other)
+
+
+class GridBasisPhase(BaseEstimator, TransformerMixin):
+    def __init__(
+        self,
+        spacing: float = 40.0,
+        orientation: float = 0.0,
+        phase0: float = 0.0,
+        phase1: float = 0.0,
+        phase2: float = 0.0,
+    ):
+        """
+        spacing  : grid spacing (cm)
+        orientation : main axis orientation (rad)
+        phase*  : phase offsets (rad) along the 3 lattice directions
+        """
+        self.spacing = spacing
+        self.orientation = orientation
+        self.phase0 = phase0
+        self.phase1 = phase1
+        self.phase2 = phase2
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = np.asarray(X)
+        x = X[:, 0]
+        y = X[:, 1]
+
+        k = 2 * np.pi / self.spacing
+
+        directions = np.array(
+            [
+                self.orientation,
+                self.orientation + np.pi / 3,
+                self.orientation + 2 * np.pi / 3,
+            ]
+        )
+        phases = np.array([self.phase0, self.phase1, self.phase2])
+
+        features = []
+        for theta, phi in zip(directions, phases):
+            proj = x * np.cos(theta) + y * np.sin(theta)
+            arg = k * proj + phi
+            features.append(np.cos(arg))
+            features.append(np.sin(arg))
+
+        return np.column_stack(features)
+
+    @property
+    def n_features_out_(self) -> int:
+        return 6
 
 
 class GridBasis(BaseEstimator, TransformerMixin):
@@ -79,7 +132,7 @@ def plot_glm_fit(axs, tc, session, bin_size_sec, model):
         tc.values[0].T,
         origin="lower",
         extent=extent,
-        cmap="terrain",
+        cmap="Grays",
         aspect="auto",
     )
     axs[0].set_xticks([])
@@ -89,7 +142,7 @@ def plot_glm_fit(axs, tc, session, bin_size_sec, model):
         pred_grid,
         origin="lower",
         extent=extent,
-        cmap="terrain",
+        cmap="Grays",
         aspect="auto",
     )
     axs[1].set_xticks([])
@@ -122,8 +175,8 @@ def get_basis(var, bounds):
             * BSplineEval(n_basis_funcs=10, label="P_y", bounds=bounds[1])
         ).to_transformer()
         hyperparams = {
-            "P_x__n_basis_funcs": np.arange(5, int(0.5 * range), 1),
-            "P_y__n_basis_funcs": np.arange(5, int(0.5 * range), 1),
+            "P_x__n_basis_funcs": np.arange(5, int(0.2 * range), 1),
+            "P_y__n_basis_funcs": np.arange(5, int(0.2 * range), 1),
         }
     elif var == "P":
         basis = CyclicBSplineEval(
@@ -154,19 +207,28 @@ def get_basis(var, bounds):
             "n_basis_funcs": np.arange(5, int(0.5 * np.degrees(range)), 1),
         }
     elif var == "grid":
-        basis = GridBasis()
+        basis = GridBasisPhase()
         hyperparams = {
-            "spacing": np.arange(0.2 * range, 0.9 * range, 1),
+            "spacing": np.arange(0.1 * range, 0.7 * range, 1),
             "orientation": np.linspace(
                 0,
                 np.pi / 3,
                 30,
                 endpoint=False,
             ),
+            "phase0": uniform(0, 2 * np.pi),
+            "phase1": uniform(0, 2 * np.pi),
+            "phase2": uniform(0, 2 * np.pi),
         }
     elif var == "grid_sim":
-        basis = GridBasis()
-        hyperparams = {"spacing": [60], "orientation": [np.pi / 6]}
+        basis = GridBasisPhase()
+        hyperparams = {
+            "spacing": [60],
+            "orientation": [np.pi / 6],
+            "phase0": uniform(0, 2 * np.pi),
+            "phase1": uniform(0, 2 * np.pi),
+            "phase2": uniform(0, 2 * np.pi),
+        }
     elif var == "P_sim":
         basis = (
             BSplineEval(n_basis_funcs=10, label="P_x", bounds=bounds[0])
@@ -192,40 +254,83 @@ def wilcoxon_nan(a, b, alternative="greater", zero_method="zsplit", min_pairs=3)
 FANCY_LABELS = {"S": "S", "H": "H", "T": "T", ("P_x", "P_y"): "P", "P": "P"}
 
 
-def count_fields(model, bounds, resolution_cm=2):
-    """
-    Count local maxima in the predicted rate map.
+def compute_com(
+    model,
+    bounds,
+    resolution_cm: float = 2.0,
+    thresh: float = 0.5,
+) -> tuple[float, float]:
+    bounds = np.asarray(bounds, dtype=float)
+    xs = np.arange(bounds[0, 0], bounds[0, 1] + resolution_cm, resolution_cm)
+    ys = np.arange(bounds[1, 0], bounds[1, 1] + resolution_cm, resolution_cm)
+    xx, yy = np.meshgrid(xs, ys, indexing="xy")
+    positions = np.column_stack([xx.ravel(), yy.ravel()])
+    rate = model.predict(positions).reshape(xx.shape)
+    rate = np.nan_to_num(rate, nan=0.0)
+    mask = rate >= thresh * rate.max()
+    if not mask.any():
+        return np.nan, np.nan
+    r_masked = rate * mask
+    total = r_masked.sum()
+    if total == 0:
+        return np.nan, np.nan
+    com_x = float((xx * r_masked).sum() / total)
+    com_y = float((yy * r_masked).sum() / total)
+    return com_x, com_y
 
+
+def count_fields(
+    model,
+    bounds: np.ndarray,
+    resolution_cm: float = 2.0,
+    thresh: float = 0.5,
+):
+    """
+    Count firing fields – and optionally return their mean area – in the
+    model-predicted rate map.
     Parameters
     ----------
-    model : sklearn Pipeline
-        Fitted GLM pipeline.
+    model : sklearn.Pipeline
+        Fitted GLM pipeline (must implement ``predict`` on positions [N, 2]).
     bounds : array-like, shape (2, 2)
-        [[xmin, xmax], [ymin, ymax]]
-    resolution_cm : float
-        Spatial sampling resolution.
-
+        [[xmin, xmax], [ymin, ymax]] (same units as the model inputs).
+    resolution_cm : float, default 2.0
+        Spatial sampling resolution (cm).
+    return_mean_size : bool, default False
+        If True, also return the mean field area (cm²).
+    thresh : float, default 0.5
+        Rate threshold expressed as a fraction of the peak rate that defines
+        the field mask (0.5 ≈ half-height).
     Returns
     -------
     int
-        Number of fields.
+        Number of detected fields.
+    float, optional
+        Mean field area (cm²). Returned only when ``return_mean_size`` is True.
     """
-    bounds = np.asarray(bounds)
-
-    x = np.arange(bounds[0, 0], bounds[0, 1] + resolution_cm, resolution_cm)
-    y = np.arange(bounds[1, 0], bounds[1, 1] + resolution_cm, resolution_cm)
-
-    xx, yy = np.meshgrid(x, y)
+    bounds = np.asarray(bounds, dtype=float)
+    # Regular grid covering the arena
+    xs = np.arange(bounds[0, 0], bounds[0, 1] + resolution_cm, resolution_cm)
+    ys = np.arange(bounds[1, 0], bounds[1, 1] + resolution_cm, resolution_cm)
+    xx, yy = np.meshgrid(xs, ys, indexing="xy")
     positions = np.column_stack([xx.ravel(), yy.ravel()])
-
+    # Predicted rate map
     rate = model.predict(positions).reshape(xx.shape)
-
-    # local maxima
+    # Locate local maxima (field centres)
     peaks = rate == maximum_filter(rate, size=3)
-
-    # ignore very small numerical maxima
-    peaks &= rate > 0.8 * rate.max()
-
-    _, n_fields = label(peaks)
-
-    return n_fields
+    peaks &= rate > 0.9 * rate.max()
+    # Supra-threshold mask that delimits fields
+    field_mask = rate >= thresh * rate.max()
+    field_labels, _ = label(field_mask)
+    # Keep only regions that contain a peak
+    peak_labels = np.unique(field_labels[peaks])
+    peak_labels = peak_labels[peak_labels != 0]  # remove background
+    n_fields = len(peak_labels)
+    pixel_area = resolution_cm**2  # cm² per pixel
+    areas = np.array(
+        [(field_labels == lab).sum() * pixel_area for lab in peak_labels],
+        dtype=float,
+    )
+    diameters = 2 * np.sqrt(areas / np.pi)
+    mean_diameter = float(diameters.mean()) if diameters.size else np.nan
+    return n_fields, mean_diameter
