@@ -7,6 +7,7 @@ import nemos as nmo
 import numpy as np
 import pynapple as nap
 from numpy.typing import ArrayLike
+from scipy.stats import loguniform
 from sklearn.dummy import DummyRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import PoissonRegressor
@@ -88,7 +89,7 @@ def fit_glm(
             f"basis__{hyperparam}": search_space
             for hyperparam, search_space in hyperparams.items()
         },
-        "glm__alpha": np.logspace(-4, 1, 10),
+        "glm__alpha": loguniform(1e-4, 1),
     }
 
     cv = RandomizedSearchCV(
@@ -148,7 +149,7 @@ def fit_glm(
                 cv.best_estimator_, bounds, resolution_cm=4
             )
         elif force_basis == "grid" or force_basis == "grid_sim":
-            for field in ["orientation", "spacing", "phase0", "phase1", "phase2"]:
+            for field in ["orientation", "field_spacing"]:
                 result[field] = getattr(cv.best_estimator_.named_steps["basis"], field)
 
             if result["n_fields"] < 3:
@@ -163,17 +164,17 @@ def fit_glm(
 
     # position = np.stack([session["P_x"], session["P_y"]], axis=1)
     # tc = nap.compute_tuning_curves(
-    #    cluster, position, bins=40, epochs=session["moving"], feature_names=["0", "1"]
+    #   cluster, position, bins=40, epochs=session["moving"], feature_names=["0", "1"]
     # )
     # tc = gaussian_filter_nan(tc, (2, 2), keep=False, mode="fill")
 
     # fig, axs = plt.subplots(1, 2, constrained_layout=True, figsize=(2, 1))
     # plot_glm_fit(axs, tc, session, bin_size_sec, cv.best_estimator_)
     # if "com_x" in result:
-    #    plt.axvline(result["com_x"])
-    #    plt.axhline(result["com_y"])
-    ##plt.savefig(f"fit_{cluster.idex[0]}.png")
+    #   plt.axvline(result["com_x"])
+    #   plt.axhline(result["com_y"])
+    #### plt.savefig(f"fit_{cluster.idex[0]}.png")
     # plt.show()
+    # plt.close()
     # print(result)
-    # quit()
     return result
