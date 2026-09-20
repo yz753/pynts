@@ -695,8 +695,8 @@ wheels = [
 
 [[package]]
 name = "nemos"
-version = "0.2.10.dev204"
-source = { git = "https://github.com/flatironinstitute/nemos.git?branch=development#1e1fa524105d3c85a4c3395a87f3109171a4e7aa" }
+version = "0.2.10.dev512"
+source = { git = "https://github.com/flatironinstitute/nemos.git?branch=development#94d594e76e1df2ba5b268b8fb93c62ddddbc8ecd" }
 dependencies = [
     { name = "jax" },
     { name = "lazy-loader" },
