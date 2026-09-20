@@ -14,6 +14,12 @@ def classify_ramps(score, null_distribution, alpha=0.01):
     result = {}
 
     for region in ["outbound", "homebound"]:
+        # deal with nan vals
+        if not score[f"{region}_valid_bins"]:
+            result[f"{region}_sig"] = np.nan
+            result[f"{region}_sign"] = 'NA'
+            continue
+        
         # Test significance
         result[f"{region}_sig"] = fdrcorrection(
             [score[f"{region}_pval"]] + null_distribution[f"{region}_pval"].tolist(),
@@ -49,7 +55,7 @@ def compute_ramps(
     range: ArrayLike,
     context: str,
     trial_types: List[str],
-    track_types: List[str],
+    test_blocks: List[str],
     outbound: ArrayLike,
     homebound: ArrayLike,
     num_bins: Optional[int] = None,
@@ -62,9 +68,9 @@ def compute_ramps(
         epoch = cluster.time_support
     
     select_trial_type = session["trials"][session["trials"]["type"].isin(trial_types)]
-    if "tracks" in session:
-        select_track_type = session["tracks"][session["tracks"]["type"].isin(track_types)]
-        trials = select_trial_type.intersect(select_track_type)
+    if session['training_or_test'] == 'test':
+        select_test_block = session["test_block"][session["test_block"]["type"].isin(test_blocks)]
+        trials = select_trial_type.intersect(select_test_block)
     else:
         trials = select_trial_type
 
@@ -81,6 +87,11 @@ def compute_ramps(
             range=range,
             epochs=epochs.intersect(session["moving"]).intersect(trials),
         )[0]
+    
+    # because blocks are within a single session, the epoch used for smoothing needs to be defined based on that
+    epoch = epoch.intersect(session["moving"]).intersect(trials)
+    if len(epoch) == 0:
+        raise ValueError("No valid epochs found for the given session and trials.")
 
     tc, smooth_sigma = apply_smoothing(
         compute_tuning_curve,
@@ -97,10 +108,27 @@ def compute_ramps(
     results = {"_smooth_sigma": smooth_sigma}
     for region, ramp_bounds in [("outbound", outbound), ("homebound", homebound)]:
         mask = (positions > ramp_bounds[0]) & (positions < ramp_bounds[1])
-        model = sm.OLS(tc.values[mask], sm.add_constant(positions[mask])).fit()
+        y = tc.values[mask]
+        x = positions[mask]
+        
+        # checking & excluding nans
+        non_nan_ratio = np.isfinite(y).sum() / len(y) if len(y) else 0.0
+        results.update({
+            f"{region}_valid_bins": False,
+            f"{region}_slope": np.nan,
+            f"{region}_intercept": np.nan,
+            f"{region}_pval": np.nan,
+            f"{region}_region": region,
+        })
+        results["tc"] = tc
+        
+        if non_nan_ratio < 0.8:
+            continue # skip this fitting
+        
+        results[f"{region}_valid_bins"] = True
+        model = sm.OLS(y, sm.add_constant(x), missing='drop').fit()
         results[f"{region}_slope"] = model.params[1]
         results[f"{region}_intercept"] = model.params[0]
         results[f"{region}_pval"] = model.pvalues[1]
-        results[f"{region}_region"] = region
-        results['tc'] = tc
+        
     return results
